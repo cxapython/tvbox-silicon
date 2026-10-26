@@ -2,7 +2,7 @@
   "releases": [
     {
       "version": "1.8.0",
-      "build": 34,
+      "build": 36,
       "date": "2026-10-26",
       "links": {
         "macos": "https://download.getmegaportal.com/yingxia/1.8.0/Yingxia-1.8.0-macos-arm64.dmg",
@@ -24,6 +24,21 @@
             "zh-Hans": "映匣现在可以播放 MKV、WebM、AVI、FLV、WMV、RMVB 和 MPEG 文件，无论来自网盘还是网址。字幕、倍速、画中画和续播照常可用。",
             "zh-Hant": "映匣現在可以播放 MKV、WebM、AVI、FLV、WMV、RMVB 和 MPEG 檔案，無論來自雲端硬碟還是網址。字幕、倍速、子母畫面和續播照常可用。",
             "ja": "映匣で MKV、WebM、AVI、FLV、WMV、RMVB、MPEG ファイルを再生できるようになりました。クラウドドライブのファイルも URL のファイルも対象です。字幕、再生速度、ピクチャ・イン・ピクチャ、続きから再生もこれまでどおり使えます。"
+          }
+        },
+        {
+          "symbol": "sun.max",
+          "title": {
+            "en": "HDR videos play",
+            "zh-Hans": "HDR 视频可以播放",
+            "zh-Hant": "HDR 影片可以播放",
+            "ja": "HDR 動画を再生できるように"
+          },
+          "detail": {
+            "en": "HDR10 MKV files that wouldn't open now play. When the player can't show them in HDR, Yingxia converts the picture to SDR with the device's video hardware.",
+            "zh-Hans": "之前无法打开的 HDR10 MKV 文件现在可以播放。播放器无法以 HDR 显示时，映匣会用设备的视频硬件把画面转换为 SDR。",
+            "zh-Hant": "之前無法開啟的 HDR10 MKV 檔案現在可以播放。播放器無法以 HDR 顯示時，映匣會用裝置的視訊硬體把畫面轉換為 SDR。",
+            "ja": "これまで開けなかった HDR10 の MKV ファイルを再生できるようになりました。HDR で表示できない場合は、デバイスのビデオハードウェアで SDR に変換します。"
           }
         },
         {
@@ -113,6 +128,54 @@
           ]
         },
         {
+          "symbol": "paperplane",
+          "title": {
+            "en": "Join the Telegram group",
+            "zh-Hans": "加入 Telegram 群组",
+            "zh-Hant": "加入 Telegram 群組",
+            "ja": "Telegram グループに参加"
+          },
+          "detail": {
+            "en": "Settings › Telegram Group opens Yingxia's group, where you can chat with the developer and other users. On Apple TV, scan its code with your iPhone.",
+            "zh-Hans": "“设置 › Telegram 群组”会打开映匣的群组，可以与开发者和其他用户交流。在 Apple TV 上，用 iPhone 扫码即可加入。",
+            "zh-Hant": "「設定 › Telegram 群組」會開啟映匣的群組，可以與開發者和其他使用者交流。在 Apple TV 上，用 iPhone 掃描即可加入。",
+            "ja": "「設定 › Telegram グループ」から映匣のグループを開き、開発者やほかのユーザーと話せます。Apple TV では iPhone でコードをスキャンして参加できます。"
+          }
+        },
+        {
+          "symbol": "trash",
+          "title": {
+            "en": "Remove subscriptions in bulk",
+            "zh-Hans": "批量移除订阅",
+            "zh-Hant": "批次移除訂閱",
+            "ja": "配信設定をまとめて削除"
+          },
+          "detail": {
+            "en": "Settings › Remove Subscriptions lets you tick several subscriptions, or all the turned-off ones, and remove them at once.",
+            "zh-Hans": "“设置 › 移除订阅”可以勾选多个订阅（或所有已关闭的订阅），一次全部移除。",
+            "zh-Hant": "「設定 › 移除訂閱」可以勾選多個訂閱（或所有已關閉的訂閱），一次全部移除。",
+            "ja": "「設定 › 配信設定を削除」で、複数の配信設定（またはオフにしたものすべて）を選んで一度に削除できます。"
+          }
+        },
+        {
+          "symbol": "folder",
+          "title": {
+            "en": "Find your downloads",
+            "zh-Hans": "找到下载的文件",
+            "zh-Hant": "找到下載的檔案",
+            "ja": "ダウンロードしたファイルを表示"
+          },
+          "detail": {
+            "en": "On the Mac, Show in Finder on the Downloads page opens the folder with your videos or songs, and a downloaded episode's menu shows its file.",
+            "zh-Hans": "在 Mac 上，“下载”页面的“在访达中显示”会打开存放视频或歌曲的文件夹；已下载剧集的菜单也可以显示它的文件。",
+            "zh-Hant": "在 Mac 上，「下載」頁面的「在 Finder 中顯示」會開啟存放影片或歌曲的資料夾；已下載劇集的選單也可以顯示它的檔案。",
+            "ja": "Mac では「ダウンロード」ページの「Finderで表示」で動画や曲のフォルダが開き、ダウンロード済みエピソードのメニューからそのファイルを表示できます。"
+          },
+          "platforms": [
+            "macos"
+          ]
+        },
+        {
           "symbol": "wrench.and.screwdriver",
           "title": {
             "en": "Other fixes",
@@ -121,10 +184,10 @@
             "ja": "その他の修正"
           },
           "detail": {
-            "en": "Groups on the Sources page start open, and Python sources behind short links now run.",
-            "zh-Hans": "“点播源”页面中的分组默认展开；通过短链接提供的 Python 点播源现在也能运行。",
-            "zh-Hant": "「隨選來源」頁面中的群組預設展開；透過短網址提供的 Python 隨選來源現在也能執行。",
-            "ja": "「配信ソース」ページのグループは最初から開いた状態になり、短縮 URL の Python ソースも動くようになりました。"
+            "en": "Groups on the Sources page start open, and Python sources behind short links now run. 玩偶's Quark lines play instead of waiting for the server, Back works on Apple TV while a video loads, and sources you hid stay off the search page.",
+            "zh-Hans": "“点播源”页面中的分组默认展开；通过短链接提供的 Python 点播源现在也能运行。玩偶的夸克线路不再一直等待服务器响应；Apple TV 在影片载入时可以按返回键离开；你隐藏的点播源不会再出现在搜索页面。",
+            "zh-Hant": "「隨選來源」頁面中的群組預設展開；透過短網址提供的 Python 隨選來源現在也能執行。玩偶的夸克線路不再一直等待伺服器回應；Apple TV 在影片載入時可以按返回鍵離開；你隱藏的隨選來源不會再出現在搜尋頁面。",
+            "ja": "「配信ソース」ページのグループは最初から開いた状態になり、短縮 URL の Python ソースも動くようになりました。玩偶の Quark 回線がサーバ待ちのまま止まらなくなり、Apple TV では動画の読み込み中にも戻るボタンが効き、非表示にしたソースが検索ページに出なくなりました。"
           }
         }
       ]
