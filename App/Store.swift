@@ -429,7 +429,9 @@ import TVCore
         if stamp == siteListStamp, let cached = groupsCache[includeHidden] { return cached }
         guard let config = subscription else { return [] }
         let pins = pinnedSources.arrange(config.sites, origin: config.origin).filter { pinnedSources.contains($0, origin: config.origin) }
-        let groups = SourceGroups.make(entries: subscriptions, documents: documents, builtIns: config.sites.filter(\.isBuiltIn), builtInOrigin: config.origin, mergedSites: config.sites, pinOrder: pins, userHidden: { hiddenSources.contains($0, origin: config.origin) }, includeHidden: includeHidden, jarURL: config.spiderURL)
+        var groups = SourceGroups.make(entries: subscriptions, documents: documents, builtIns: config.sites.filter(\.isBuiltIn), builtInOrigin: config.origin, mergedSites: config.sites, pinOrder: pins, userHidden: { hiddenSources.contains($0, origin: config.origin) }, includeHidden: includeHidden, jarURL: config.spiderURL)
+        // The viewer's own order, while it is on, orders the sources inside each group too.
+        if sourceOrder.enabled { groups = sourceOrder.arrange(groups, origin: config.origin) }
         rememberSiteLists(stamp)
         groupsCache[includeHidden] = groups
         return groups
