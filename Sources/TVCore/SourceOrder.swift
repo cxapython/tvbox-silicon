@@ -31,6 +31,15 @@ import Observation
         }.map(\.element)
     }
 
+    /// Each group's sources in the saved order, so moving a source on the Sources page moves it inside its group.
+    public func arrange(_ groups: [SourceGroup], origin: URL) -> [SourceGroup] {
+        groups.map { group in
+            var group = group
+            group.sites = arrange(group.sites, origin: origin)
+            return group
+        }
+    }
+
     /// Saves `sites` as the order. Saved sources not among them (a subscription that is turned off)
     /// keep their places after them, so turning it back on doesn't lose its order.
     public func save(_ sites: [Site], origin: URL) {
