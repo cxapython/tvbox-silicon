@@ -1534,6 +1534,7 @@ struct VideoDetailView: View {
         .background { if fullScreen { Color.black.ignoresSafeArea() } }
         .statusBarHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        .background { EdgeSwipeBack(enabled: !fullScreen) }
         .toolbar(.hidden, for: .tabBar)
         .onAppear {
             store.watchPageScopes.formUnion(watchScopes)
@@ -1777,6 +1778,45 @@ struct VideoDetailView: View {
 enum WatchPage {
     @MainActor static func applies(_ horizontal: UserInterfaceSizeClass?, _ vertical: UserInterfaceSizeClass?) -> Bool {
         UIDevice.current.userInterfaceIdiom == .phone && !(horizontal == .regular && vertical == .regular)
+    }
+}
+
+/// A swipe from the left edge goes back, as on any pushed page: hiding the navigation bar turns that gesture off.
+/// It also comes before the picture's slide-to-seek and the episode row's scrolling, which would otherwise take a
+/// swipe that starts at the edge.
+struct EdgeSwipeBack: UIViewControllerRepresentable {
+    /// Off in Full Screen, where the swipe would leave the page.
+    var enabled: Bool
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.enabled = enabled }
+
+    final class Controller: UIViewController, UIGestureRecognizerDelegate {
+        var enabled = true
+        private weak var recognizer: UIGestureRecognizer?
+        private weak var previous: UIGestureRecognizerDelegate?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            // Again after a swipe that was let go halfway, which brings the page back.
+            guard let pop = navigationController?.interactivePopGestureRecognizer, pop.delegate !== self else { return }
+            recognizer = pop; previous = pop.delegate
+            pop.delegate = self; pop.isEnabled = true
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            // The swipe already under way goes on; other pages get the system's own rules back.
+            if let recognizer, recognizer.delegate === self { recognizer.delegate = previous }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            enabled && (navigationController?.viewControllers.count ?? 0) > 1
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            enabled && other is UIPanGestureRecognizer
+        }
     }
 }
 #endif
