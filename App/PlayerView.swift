@@ -13,6 +13,10 @@ struct PlaybackView: View {
     @State private var session = PlaybackSession()
     @State private var showsChrome = true
     @State private var hideTask: Task<Void, Never>?
+    #if os(iOS)
+    /// A watch page starts playing by itself, so its controls wait for a tap (`-qaPlayerControls` keeps them up).
+    @State private var quietStart = !UserDefaults.standard.bool(forKey: "qaPlayerControls")
+    #endif
     @AppStorage(DanmakuPreference.key) private var showsDanmaku = true
     @State private var showsDanmakuList = false
     @AppStorage(VideoEnhancement.upscaleKey) private var upscalesVideo = false
@@ -22,7 +26,12 @@ struct PlaybackView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
 
-    private var chromeVisible: Bool { showsChrome || session.error != nil || session.loading }
+    private var chromeVisible: Bool {
+        #if os(iOS)
+        if playerLayout == .inline, quietStart { return session.error != nil }
+        #endif
+        return showsChrome || session.error != nil || session.loading
+    }
 
     var body: some View {
         ZStack {
@@ -98,7 +107,7 @@ struct PlaybackView: View {
         .simultaneousGesture(TapGesture().onEnded { poke() })
         #endif
         #endif
-        .onAppear { startCatalogPlayback(session, channel: channel, store: store); poke() }
+        .onAppear { startCatalogPlayback(session, channel: channel, store: store); showOnStart() }
         #if DEBUG && os(iOS)
         // `-qaWatchFullScreen <seconds>`: a watch page's player goes full screen after that long, for screenshots.
         .task(id: watch != nil) {
@@ -108,7 +117,7 @@ struct PlaybackView: View {
             if !Task.isCancelled { toggleFullScreen() }
         }
         #endif
-        .onChange(of: channel) { _, channel in startCatalogPlayback(session, channel: channel, store: store); poke() }
+        .onChange(of: channel) { _, channel in startCatalogPlayback(session, channel: channel, store: store); showOnStart() }
         .onChange(of: showsDanmaku) { _, value in session.catalogDanmaku.enabled = value }
         .onChange(of: session.catalogDanmaku.enabled) { _, value in showsDanmaku = value }
         .onDisappear {
@@ -220,8 +229,22 @@ struct PlaybackView: View {
     #endif
 
     private func poke() {
+        #if os(iOS)
+        quietStart = false
+        #endif
         showsChrome = true
         scheduleHide()
+    }
+
+    /// A channel starting shows the controls for a moment, except at the top of a watch page, which plays by itself.
+    private func showOnStart() {
+        #if os(iOS)
+        if playerLayout == .inline, !UserDefaults.standard.bool(forKey: "qaPlayerControls") {
+            hideTask?.cancel(); quietStart = true; showsChrome = false
+            return
+        }
+        #endif
+        poke()
     }
 
     private func scheduleHide() {
@@ -269,7 +292,7 @@ struct PlaybackView: View {
         // UI tests tap the picture to reach the controls, which `-qaPlayerControls` keeps up.
         if UserDefaults.standard.bool(forKey: "qaPlayerControls") { return poke() }
         #endif
-        guard showsChrome else { return poke() }
+        guard showsChrome, !quietStart else { return poke() }
         hideTask?.cancel()
         withAnimation(.smooth(duration: 0.25)) { showsChrome = false }
     }
@@ -281,6 +304,7 @@ struct PlaybackView: View {
     #endif
     #else
     private func poke() {}
+    private func showOnStart() {}
     #endif
 
     @ViewBuilder private var status: some View {
