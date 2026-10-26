@@ -38,6 +38,13 @@ import TVCore
     var error: String?
     var notice: String?
     var playing: Channel?
+    /// The videos whose iPhone watch page is on screen (`PlaybackHistoryContext.id`): their episodes play at the top
+    /// of the page instead of in the full-screen player.
+    var watchPageScopes: Set<String> = []
+    func playsInWatchPage(_ channel: Channel?) -> Bool {
+        guard let scope = channel?.historyContext?.id else { return false }
+        return watchPageScopes.contains(scope)
+    }
     var playbackCatalog: PlaybackCatalog?
     /// The Cloud Files folder the playing file came from; its next file plays after it.
     var filesFolder: CloudFilesFolder?
@@ -555,19 +562,26 @@ import TVCore
         resumingHistoryID = nil
     }
 
+    /// The source a watched title came from. Any enabled subscription can hold it: it is found by its own origin
+    /// and original key. Nil for Cloud Files, and once the source is gone.
+    func historyClient(_ entry: PlaybackHistoryEntry) -> CatalogClient? {
+        guard entry.context.sourceKey != CloudFiles.sourceKey, let config = subscription,
+              let site = config.sites.first(where: { $0.origin(or: config.origin) == entry.context.origin && $0.sourceKey == entry.context.sourceKey })
+        else { return nil }
+        return CatalogClient(site: site, origin: config.origin, jarURL: config.spiderURL).applying(config)
+    }
+
     func resumeHistory(_ entry: PlaybackHistoryEntry) async {
         resumingHistoryID = entry.id
         defer { if resumingHistoryID == entry.id, !Task.isCancelled { resumingHistoryID = nil } }
         if entry.context.sourceKey == CloudFiles.sourceKey { return resumeFile(entry) }
-        // Any enabled subscription can hold the source: it is found by its own origin and original key.
-        guard let config = subscription,
-              let site = config.sites.first(where: { $0.origin(or: config.origin) == entry.context.origin && $0.sourceKey == entry.context.sourceKey }) else {
+        guard let config = subscription, let client = historyClient(entry) else {
             error = L10n.text("This history source is no longer in the current subscription. Restore that subscription to continue.")
             return
         }
+        let site = client.site
         let previousPlayback = playing
         do {
-            let client = CatalogClient(site: site, origin: config.origin, jarURL: config.spiderURL).applying(config)
             // Plugin/API sources resolve an episode again. Direct-file APIs must refresh
             // their detail first so an expiring media address never becomes a resume shortcut.
             var video = try await client.detail(entry.context.videoID, cached: site.type == 3 || site.type == 4)

@@ -24,6 +24,10 @@ struct MobilePlayerView: View {
     /// The seek bar is held (true) or let go (false): the controls stay up until it is let go.
     let hold: (Bool) -> Void
     let close: () -> Void
+    /// The whole screen, or the top of an iPhone watch page.
+    var layout: MobilePlayerLayout = .screen
+    /// On a watch page: Full Screen, or back to the page.
+    var toggleFullScreen: (() -> Void)? = nil
 
     @Environment(Store.self) private var store
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -64,24 +68,36 @@ struct MobilePlayerView: View {
 
     var body: some View {
         ZStack {
-            PlayerLayerView(player: session.player, fills: fillsScreen, pip: pip).ignoresSafeArea()
+            PlayerLayerView(player: session.player, fills: fillsScreen, pip: pip).playerBleed(!inline)
             // The enhanced picture covers the layer's own, under everything else.
             EnhancedVideoSurface(enhancer: session.enhancer, fills: fillsScreen)
             if showsDanmaku && !session.danmaku.isEmpty {
                 DanmakuOverlay(player: session.player, comments: session.danmaku, opacity: session.danmakuOpacity, revision: session.danmakuRevision)
                     // Across the whole width, but below the Dynamic Island and above the home indicator when upright.
-                    .ignoresSafeArea(edges: .horizontal)
+                    .playerBleed(!inline, edges: .horizontal)
             }
             // The artwork dissolves into the first frame.
-            if let waiting { waiting.view.ignoresSafeArea().transition(.opacity) }
+            if let waiting {
+                if inline {
+                    // On a watch page: the cover across the player, blurred, as before it started; the full-screen
+                    // player keeps its own wait.
+                    Group {
+                        if waiting.starting { WatchCoverBackdrop(poster: waiting.artwork.poster, headers: waiting.artwork.headers, loading: session.error == nil) }
+                        else { ProgressView().controlSize(.large).tint(.white) }
+                    }
+                    .transition(.opacity)
+                } else {
+                    waiting.view.playerBleed(true).transition(.opacity)
+                }
+            }
             if pip.active { pipPlaceholder }
-            if playingOn != nil { Color.black.ignoresSafeArea() }
+            if playingOn != nil { Color.black.playerBleed(!inline) }
             // A tap on the picture shows or hides the controls; a tap on a control keeps them up (see `rows`).
             // Two taps on a side skip, touching and holding plays faster, and sliding sideways seeks.
             PictureGestures(tap: tapped, hold: held, swipe: swiped, levels: slidesLevels) { wider in
                 withAnimation(.easeInOut(duration: 0.25)) { fillsScreen = wider }
             }
-            .ignoresSafeArea()
+            .playerBleed(!inline)
             .accessibilityHidden(true)
             if mountsVolume {
                 MusicVolumeSlider.HiddenVolumeView(system: systemVolume).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false)
@@ -385,7 +401,7 @@ struct MobilePlayerView: View {
             .foregroundStyle(.white)
             .environment(\.colorScheme, .dark)
             // Below the top row when the controls show.
-            .padding(.top, chromeVisible ? 112 : 24)
+            .padding(.top, inline ? (chromeVisible ? 58 : 10) : chromeVisible ? 112 : 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .animation(.easeOut(duration: 0.2), value: chromeVisible)
             .transition(.opacity)
@@ -394,24 +410,26 @@ struct MobilePlayerView: View {
 
     /// Play, skip and the seek bar wait for the stream: while it connects or after it fails, only the top row shows.
     private var showsTransport: Bool { !session.loading && session.error == nil }
+    /// At the top of a watch page: smaller controls, and the page has the title.
+    private var inline: Bool { layout == .inline }
     private var seekable: Bool { session.hasTimeline && !session.isLive }
 
     private var controls: some View {
         ZStack {
             // Scrims, so white controls read over a bright picture.
             VStack(spacing: 0) {
-                LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom).frame(height: 150)
+                LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom).frame(height: inline ? 70 : 150)
                 Spacer(minLength: 0)
-                LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom).frame(height: 150)
+                LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom).frame(height: inline ? 80 : 150)
             }
-            .ignoresSafeArea()
+            .playerBleed(!inline)
             .allowsHitTesting(false)
             VStack(spacing: 0) {
                 topRow
                 Spacer(minLength: 0)
                 if showsTransport { bottomRow }
             }
-            .padding(16)
+            .padding(inline ? 8 : 16)
             if showsTransport { centerRow }
         }
         .foregroundStyle(.white)
@@ -422,7 +440,24 @@ struct MobilePlayerView: View {
 
     /// One row when it fits; on a phone held upright, Back and the buttons share the first row and the title has the
     /// next one to itself, as in YouTube's player.
-    private var topRow: some View {
+    @ViewBuilder private var topRow: some View {
+        if inline {
+            HStack(spacing: 8) {
+                Button(action: close) { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
+                    .chromeButton()
+                    .accessibilityLabel(L10n.text("Back"))
+                    .accessibilityIdentifier("player.close")
+                Spacer(minLength: 0)
+                toolbar
+                optionsMenu
+            }
+            .simultaneousGesture(TapGesture().onEnded { poke() })
+        } else {
+            screenTopRow
+        }
+    }
+
+    private var screenTopRow: some View {
         PlayerTopBar {
             Button(action: close) { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
                 .chromeButton()
@@ -459,7 +494,8 @@ struct MobilePlayerView: View {
                 .accessibilityLabel(L10n.text("Picture in Picture"))
                 .accessibilityIdentifier("player.pip")
             }
-            CatalogPlaybackActions(channel: channel, session: session)
+            // On a watch page the episodes are on the page itself.
+            if !inline { CatalogPlaybackActions(channel: channel, session: session) }
             // One button for danmaku: show or hide them, or open the list.
             if !session.danmaku.isEmpty {
                 Menu {
@@ -473,7 +509,7 @@ struct MobilePlayerView: View {
             }
             // Turns the picture even with Portrait Orientation Lock on, the way the system's own rotation can't.
             // Only on a phone-sized screen: iPhone Duo's inner display (regular both ways) ignores orientations.
-            if PlayerOrientation.available, horizontalSizeClass == .compact || verticalSizeClass == .compact {
+            if !inline, PlayerOrientation.available, horizontalSizeClass == .compact || verticalSizeClass == .compact {
                 let landscape = verticalSizeClass == .compact
                 Button { PlayerOrientation.set(landscape: !landscape) } label: {
                     Image(systemName: landscape ? "rectangle.portrait.rotate" : "rectangle.landscape.rotate").font(.headline).frame(width: 22, height: 22)
@@ -543,7 +579,7 @@ struct MobilePlayerView: View {
 
     private var centerRow: some View {
         HStack(spacing: 20) {
-            if seekable {
+            if seekable && !inline {
                 Button { session.skip(-10); sought() } label: { Image(systemName: "gobackward.10") }
                     .buttonStyle(PlayerCircleStyle(size: 52))
                     .accessibilityLabel(L10n.text("Back 10 seconds"))
@@ -552,10 +588,10 @@ struct MobilePlayerView: View {
                 // Swapped as the music player's is.
                 Image(systemName: session.paused ? "play.fill" : "pause.fill").contentTransition(.symbolEffect(.replace))
             }
-                .buttonStyle(PlayerCircleStyle(size: 68))
+                .buttonStyle(PlayerCircleStyle(size: inline ? 50 : 68))
                 .accessibilityLabel(L10n.text(session.paused ? "Play" : "Pause"))
                 .accessibilityIdentifier("player.playPause")
-            if seekable {
+            if seekable && !inline {
                 Button { session.skip(10); sought() } label: { Image(systemName: "goforward.10") }
                     .buttonStyle(PlayerCircleStyle(size: 52))
                     .accessibilityLabel(L10n.text("Forward 10 seconds"))
@@ -569,7 +605,7 @@ struct MobilePlayerView: View {
     @ViewBuilder private var stepButtons: some View {
         let previous = store.step(back: true, from: channel, session: session)
         let next = store.step(back: false, from: channel, session: session)
-        if previous != nil || next != nil {
+        if previous != nil || next != nil || toggleFullScreen != nil {
             HStack(spacing: 10) {
                 if let previous {
                     Button { previous.go() } label: { Image(systemName: "backward.end.fill") }
@@ -582,6 +618,15 @@ struct MobilePlayerView: View {
                         .buttonStyle(PlayerCircleStyle(size: 36))
                         .disabled(next.busy)
                         .accessibilityLabel(L10n.text("Next Episode"))
+                }
+                if let toggleFullScreen {
+                    let full = layout == .pageFullScreen
+                    Button(action: toggleFullScreen) {
+                        Image(systemName: full ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(PlayerCircleStyle(size: 36))
+                    .accessibilityLabel(L10n.text(full ? "Exit Full Screen" : "Full Screen"))
+                    .accessibilityIdentifier("player.fullScreen")
                 }
             }
             .simultaneousGesture(TapGesture().onEnded { poke() })
@@ -622,7 +667,64 @@ struct MobilePlayerView: View {
         .foregroundStyle(.white.opacity(0.6))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
-        .ignoresSafeArea()
+        .playerBleed(!inline)
+    }
+}
+
+/// The top of an iPhone watch page before the picture: the cover filling the width, blurred, under a spinner.
+struct WatchCoverBackdrop: View {
+    let poster: URL?
+    var headers: [String: String] = [:]
+    var loading = true
+    var body: some View {
+        ZStack {
+            Color.black
+            PosterImage(url: poster, headers: headers)
+                .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                .blur(radius: 24).scaleEffect(1.2)
+                .overlay(Color.black.opacity(0.35))
+                .accessibilityHidden(true)
+            if loading { ProgressView().controlSize(.large).tint(.white) }
+        }
+        .clipped()
+    }
+}
+
+/// Where the iPhone and iPad player is drawn.
+enum MobilePlayerLayout {
+    /// A screen of its own (the full-screen player).
+    case screen
+    /// The top of an iPhone watch page, under the status bar.
+    case inline
+    /// A watch page's player filling the screen; Back returns to the page.
+    case pageFullScreen
+}
+
+/// The player at the top of an iPhone watch page (`VideoDetailView`).
+struct WatchPlayback {
+    /// Filling the screen, or at the top of the page.
+    var fullScreen: Bool
+    /// Full Screen, or back to the page. True when the picture is wider than tall, so the phone turns.
+    var toggleFullScreen: (_ landscape: Bool) -> Void
+    /// Back, out of the page.
+    var leave: () -> Void
+    /// The picture, or an error, has taken the place of the wait: the page's cover can go.
+    var started: (Bool) -> Void = { _ in }
+}
+
+/// The full-screen player sets the app's appearance; one at the top of a page sets only its own.
+struct PlayerScheme: ViewModifier {
+    let ownsScreen: Bool
+    func body(content: Content) -> some View {
+        if ownsScreen { content.preferredColorScheme(.dark) } else { content.environment(\.colorScheme, .dark) }
+    }
+}
+
+extension View {
+    /// Under the status bar and the home indicator on a screen of its own; inside its frame at the top of a page,
+    /// where reaching into the safe area would run the picture under the status bar.
+    @ViewBuilder func playerBleed(_ bleeds: Bool, edges: Edge.Set = .all) -> some View {
+        if bleeds { ignoresSafeArea(edges: edges) } else { self }
     }
 }
 

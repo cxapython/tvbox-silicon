@@ -4,11 +4,19 @@ import TVCore
 
 struct PlaybackView: View {
     let channel: Channel
+    #if os(iOS)
+    /// Set when the player is the top of an iPhone watch page rather than a screen of its own.
+    var watch: WatchPlayback? = nil
+    #endif
     @Environment(\.dismiss) private var dismiss
     @Environment(Store.self) private var store
     @State private var session = PlaybackSession()
     @State private var showsChrome = true
     @State private var hideTask: Task<Void, Never>?
+    #if os(iOS)
+    /// A watch page starts playing by itself, so its controls wait for a tap (`-qaPlayerControls` keeps them up).
+    @State private var quietStart = !UserDefaults.standard.bool(forKey: "qaPlayerControls")
+    #endif
     @AppStorage(DanmakuPreference.key) private var showsDanmaku = true
     @State private var showsDanmakuList = false
     @AppStorage(VideoEnhancement.upscaleKey) private var upscalesVideo = false
@@ -18,11 +26,20 @@ struct PlaybackView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
 
-    private var chromeVisible: Bool { showsChrome || session.error != nil || session.loading }
+    private var chromeVisible: Bool {
+        #if os(iOS)
+        if playerLayout == .inline, quietStart { return session.error != nil }
+        #endif
+        return showsChrome || session.error != nil || session.loading
+    }
 
     var body: some View {
         ZStack {
+            #if os(iOS)
+            Color.black.playerBleed(playerLayout != .inline)
+            #else
             Color.black.ignoresSafeArea()
+            #endif
             #if os(tvOS)
             // Remove the native focus environment while recovery controls are shown.
             if session.error == nil {
@@ -42,7 +59,7 @@ struct PlaybackView: View {
             #elseif os(iOS)
             MobilePlayerView(channel: channel, session: session, showsDanmaku: $showsDanmaku, upscalesVideo: $upscalesVideo, smoothsVideo: $smoothsVideo,
                              waiting: waitContent, chromeVisible: chromeVisible, toggleChrome: toggleChrome, poke: poke, hold: holdChrome,
-                             close: { dismiss() })
+                             close: exit, layout: playerLayout, toggleFullScreen: watch.map { _ in toggleFullScreen })
             #else
             NativePlayerView(player: session.player, comments: session.danmaku, showsDanmaku: $showsDanmaku, opacity: session.danmakuOpacity, revision: session.danmakuRevision).ignoresSafeArea()
             chrome.opacity(chromeVisible ? 1 : 0).allowsHitTesting(chromeVisible)
@@ -72,7 +89,12 @@ struct PlaybackView: View {
             }
             #endif
         }
+        #if os(iOS)
+        // On a watch page the rest of the page keeps its own appearance.
+        .modifier(PlayerScheme(ownsScreen: watch == nil))
+        #else
         .preferredColorScheme(.dark)
+        #endif
         #if os(macOS)
         .frame(minWidth: 880, minHeight: 540)
         #endif
@@ -85,8 +107,20 @@ struct PlaybackView: View {
         .simultaneousGesture(TapGesture().onEnded { poke() })
         #endif
         #endif
-        .onAppear { startCatalogPlayback(session, channel: channel, store: store); poke() }
-        .onChange(of: channel) { _, channel in startCatalogPlayback(session, channel: channel, store: store); poke() }
+        .onAppear { startCatalogPlayback(session, channel: channel, store: store); showOnStart() }
+        #if DEBUG && os(iOS)
+        // `-qaWatchFullScreen <seconds>`: a watch page's player goes full screen after that long, for screenshots.
+        .task(id: watch != nil) {
+            let delay = UserDefaults.standard.double(forKey: "qaWatchFullScreen")
+            guard watch?.fullScreen == false, delay > 0 else { return }
+            try? await Task.sleep(for: .seconds(delay))
+            if !Task.isCancelled { toggleFullScreen() }
+        }
+        #endif
+        .onChange(of: channel) { _, channel in startCatalogPlayback(session, channel: channel, store: store); showOnStart() }
+        #if os(iOS)
+        .onChange(of: session.showsPicture || session.error != nil, initial: true) { _, started in watch?.started(started) }
+        #endif
         .onChange(of: showsDanmaku) { _, value in session.catalogDanmaku.enabled = value }
         .onChange(of: session.catalogDanmaku.enabled) { _, value in showsDanmaku = value }
         .onDisappear {
@@ -198,8 +232,22 @@ struct PlaybackView: View {
     #endif
 
     private func poke() {
+        #if os(iOS)
+        quietStart = false
+        #endif
         showsChrome = true
         scheduleHide()
+    }
+
+    /// A channel starting shows the controls for a moment, except at the top of a watch page, which plays by itself.
+    private func showOnStart() {
+        #if os(iOS)
+        if playerLayout == .inline, !UserDefaults.standard.bool(forKey: "qaPlayerControls") {
+            hideTask?.cancel(); quietStart = true; showsChrome = false
+            return
+        }
+        #endif
+        poke()
     }
 
     private func scheduleHide() {
@@ -223,13 +271,31 @@ struct PlaybackView: View {
     }
 
     #if os(iOS)
+    private var playerLayout: MobilePlayerLayout {
+        guard let watch else { return .screen }
+        return watch.fullScreen ? .pageFullScreen : .inline
+    }
+
+    /// Back: closes the player; on a watch page, leaves Full Screen, or the page.
+    private func exit() {
+        guard let watch else { return dismiss() }
+        if watch.fullScreen { toggleFullScreen() } else { watch.leave() }
+    }
+
+    /// Full Screen turns the phone for a picture wider than tall; a portrait video fills the screen upright.
+    private func toggleFullScreen() {
+        let size = session.player.currentItem?.presentationSize ?? .zero
+        watch?.toggleFullScreen(size.height == 0 || size.width >= size.height)
+        poke()
+    }
+
     /// A tap on the picture shows the controls, or hides them at once.
     private func toggleChrome() {
         #if DEBUG
         // UI tests tap the picture to reach the controls, which `-qaPlayerControls` keeps up.
         if UserDefaults.standard.bool(forKey: "qaPlayerControls") { return poke() }
         #endif
-        guard showsChrome else { return poke() }
+        guard showsChrome, !quietStart else { return poke() }
         hideTask?.cancel()
         withAnimation(.smooth(duration: 0.25)) { showsChrome = false }
     }
@@ -241,6 +307,7 @@ struct PlaybackView: View {
     #endif
     #else
     private func poke() {}
+    private func showOnStart() {}
     #endif
 
     @ViewBuilder private var status: some View {
@@ -249,33 +316,48 @@ struct PlaybackView: View {
             TVPlaybackFailureView(channelName: channel.name, details: error, symbol: session.errorSymbol, backdrop: waitContent,
                                   retry: { startCatalogPlayback(session, channel: channel, store: store) }, goBack: { dismiss() })
             #elseif os(iOS)
-            // A pause, not an alarm: the artwork stays behind (see waitContent), the words are kind, and the next step is clear.
-            VStack(spacing: 0) {
-                Image(systemName: session.errorSymbol)
-                    .font(.system(size: 58, weight: .regular))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.white)
-                    .breathingSymbol()
-                    .shadow(color: .white.opacity(0.22), radius: 26)
-                    .frame(height: 70)
-                    .accessibilityHidden(true)
-                Text(L10n.text("Can't play this right now")).font(.title2.weight(.semibold)).padding(.top, 24)
-                Text(error).font(.callout).foregroundStyle(.white.opacity(0.7)).lineSpacing(2)
-                    .multilineTextAlignment(.center).frame(maxWidth: 330).padding(.top, 10)
-                GlassGroup(spacing: 12) {
-                    HStack(spacing: 12) {
-                        Button { startCatalogPlayback(session, channel: channel, store: store) } label: {
-                            Label(L10n.text("Try Again"), systemImage: "arrow.clockwise")
-                        }
-                        .controlButton(prominent: true).tint(Brand.accent)
-                        Button { dismiss() } label: { Label(L10n.text("Close"), systemImage: "xmark") }.controlButton()
+            if playerLayout == .inline {
+                // At the top of a watch page: the same words, small, and Try Again; the page has Back.
+                VStack(spacing: 8) {
+                    Label(L10n.text("Can't play this right now"), systemImage: session.errorSymbol).font(.headline)
+                    Text(error).font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    Button { startCatalogPlayback(session, channel: channel, store: store) } label: {
+                        Label(L10n.text("Try Again"), systemImage: "arrow.clockwise")
                     }
+                    .controlButton(prominent: true).tint(Brand.accent).controlSize(.small).padding(.top, 2)
                 }
-                .controlSize(.large).padding(.top, 30)
+                .foregroundStyle(.white).padding(.horizontal, 24).padding(.top, 36)
+                .environment(\.colorScheme, .dark)
+            } else {
+                // A pause, not an alarm: the artwork stays behind (see waitContent), the words are kind, and the next step is clear.
+                VStack(spacing: 0) {
+                    Image(systemName: session.errorSymbol)
+                        .font(.system(size: 58, weight: .regular))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.white)
+                        .breathingSymbol()
+                        .shadow(color: .white.opacity(0.22), radius: 26)
+                        .frame(height: 70)
+                        .accessibilityHidden(true)
+                    Text(L10n.text("Can't play this right now")).font(.title2.weight(.semibold)).padding(.top, 24)
+                    Text(error).font(.callout).foregroundStyle(.white.opacity(0.7)).lineSpacing(2)
+                        .multilineTextAlignment(.center).frame(maxWidth: 330).padding(.top, 10)
+                    GlassGroup(spacing: 12) {
+                        HStack(spacing: 12) {
+                            Button { startCatalogPlayback(session, channel: channel, store: store) } label: {
+                                Label(L10n.text("Try Again"), systemImage: "arrow.clockwise")
+                            }
+                            .controlButton(prominent: true).tint(Brand.accent)
+                            Button { exit() } label: { Label(L10n.text("Close"), systemImage: "xmark") }.controlButton()
+                        }
+                    }
+                    .controlSize(.large).padding(.top, 30)
+                }
+                .foregroundStyle(.white)
+                .padding(32)
+                .environment(\.colorScheme, .dark)
             }
-            .foregroundStyle(.white)
-            .padding(32)
-            .environment(\.colorScheme, .dark)
             #else
             VStack(spacing: 18) {
                 Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(Brand.amber)
@@ -497,10 +579,12 @@ private struct PlayerSurface: NSViewRepresentable {
 @MainActor enum PlayerOrientation {
     static private(set) var mask: UIInterfaceOrientationMask = .allButUpsideDown
     static var available: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    /// An iPhone watch page is on screen: it stays upright, and only its Full Screen turns the phone.
+    static private var holdsPortrait = false
 
     static func set(landscape: Bool) {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return }
-        mask = landscape ? .landscape : .allButUpsideDown
+        mask = landscape ? .landscape : holdsPortrait ? .portrait : .allButUpsideDown
         var controller = scene.keyWindow?.rootViewController
         while let next = controller?.presentedViewController { controller = next }
         controller?.setNeedsUpdateOfSupportedInterfaceOrientations()
@@ -512,6 +596,13 @@ private struct PlayerSurface: NSViewRepresentable {
     /// Back to portrait when the player closes, if the button turned it.
     static func release() {
         if mask == .landscape { set(landscape: false) }
+    }
+
+    /// While a watch page shows, the app stays upright (the page turns to landscape for Full Screen only).
+    static func holdPortrait(_ hold: Bool) {
+        guard holdsPortrait != hold else { return }
+        holdsPortrait = hold
+        if mask != .landscape { set(landscape: false) }
     }
 }
 #else

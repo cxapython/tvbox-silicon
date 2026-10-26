@@ -1027,3 +1027,8 @@
 "Chat with the developer and other users" = "開発者やほかのユーザーと話せます";
 "Prefer to chat? Join the Telegram group." = "チャットで話したいときは、Telegram グループへどうぞ。";
 "Scan with your iPhone to join the group." = "iPhone でスキャンしてグループに参加します。";
+
+/* iPhone watch page */
+"Full Screen" = "フルスクリーン";
+"Exit Full Screen" = "フルスクリーンを終了";
+"Lines" = "再生ライン";

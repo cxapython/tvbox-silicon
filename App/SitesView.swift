@@ -784,6 +784,18 @@ struct VideoDetailView: View {
     @Environment(Store.self) private var store
     let video: Video
     let client: CatalogClient
+    /// Opened from Continue Watching: on an iPhone the page resumes it at once.
+    var resume: PlaybackHistoryEntry? = nil
+    #if os(iOS)
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @State private var fullScreen = false
+    @State private var showsAllEpisodes = false
+    @State private var episodeScroll: Episode.ID?
+    /// The page's player shows its picture (or an error); until then the page's cover stays over it.
+    @State private var playerStarted = false
+    /// Back on the cover while it starts: shown for a moment by a tap, as the player's controls are.
+    @State private var coverBack = false
+    #endif
     @State private var requestTask: Task<Void, Never>?
     @State private var detail: Video?
     @State private var error: String?
@@ -838,42 +850,13 @@ struct VideoDetailView: View {
 
     var body: some View {
         Group {
-            if splitLayout {
-                // Watch-page split: artwork, Play and synopsis on the left; the episode rail
-                // scrolls on its own so the title and playback state stay in view.
-                HStack(alignment: .top, spacing: Layout.gutter + 8) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) { header }
-                        .padding(.vertical, Layout.gutter)
-                    }
-                    .scrollIndicators(.never)
-                    // Each column is a full-height focus section: with a few episodes the rail ends
-                    // above Play, and the remote found nothing to its right (no way to the source chips).
-                    .tvFocusSection()
-                    episodePanel(scrolls: true).padding(.top, Layout.gutter)
-                        .frame(width: railWidth).frame(maxHeight: .infinity, alignment: .top)
-                        .tvFocusSection()
-                }
-                .padding(.horizontal, Layout.gutter)
-                .frame(maxWidth: Layout.maxWidth).frame(maxWidth: .infinity)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        header
-                        if detail != nil {
-                            episodePanel(scrolls: false)
-                        } else if let error {
-                            errorCard(error).padding(.top, 12)
-                        } else {
-                            // The Play placeholder in the header holds focus while details load.
-                            DetailSkeleton()
-                        }
-                    }
-                    .pageContainer()
-                }
-            }
+            #if os(iOS)
+            if watchLayout { watchBody } else { pageBody }
+            #else
+            pageBody
+            #endif
         }
-        .safeAreaInset(edge: .bottom) { if !splitLayout { loadingCard } }
+        .safeAreaInset(edge: .bottom) { if !splitLayout && !isWatchPage { loadingCard } }
         // The split has no outer scroll view to absorb a bottom inset: one appearing when Play
         // starts pushed both columns up under the toolbar. Float the card over it instead.
         .overlay(alignment: .bottom) { if splitLayout { loadingCard } }
@@ -881,7 +864,19 @@ struct VideoDetailView: View {
         .screenBackdrop()
         .screenTitle(video.name).task {
             store.searchModel.suspend()
+            #if os(iOS)
+            // The watch page plays at once: where the viewer stopped (from Continue Watching, or watched before),
+            // which resolves its own details, or else the first episode once the details are in.
+            let continues = watchLayout && watchChannel == nil && store.resumingHistoryID == nil
+            let entry = continues ? resume ?? watchHistory : nil
+            if let entry { store.resume(entry) }
+            #endif
             if detail == nil { await loadDetail() }
+            #if os(iOS)
+            if continues, entry == nil, watchChannel == nil, let first = detail.flatMap({ detail in detail.episodes.first { $0.flag == activeFlag } }) {
+                startRequest { await play(first) }
+            }
+            #endif
             #if DEBUG
             // `-qaDownloadPicker 1` opens the episode picker, for screenshots.
             if UserDefaults.standard.bool(forKey: "qaDownloadPicker") { choosingDownloads = true }
@@ -925,6 +920,52 @@ struct VideoDetailView: View {
             }
         }
     }
+
+    @ViewBuilder private var pageBody: some View {
+        if splitLayout {
+            // Watch-page split: artwork, Play and synopsis on the left; the episode rail
+            // scrolls on its own so the title and playback state stay in view.
+            HStack(alignment: .top, spacing: Layout.gutter + 8) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) { header }
+                    .padding(.vertical, Layout.gutter)
+                }
+                .scrollIndicators(.never)
+                // Each column is a full-height focus section: with a few episodes the rail ends
+                // above Play, and the remote found nothing to its right (no way to the source chips).
+                .tvFocusSection()
+                episodePanel(scrolls: true).padding(.top, Layout.gutter)
+                    .frame(width: railWidth).frame(maxHeight: .infinity, alignment: .top)
+                    .tvFocusSection()
+            }
+            .padding(.horizontal, Layout.gutter)
+            .frame(maxWidth: Layout.maxWidth).frame(maxWidth: .infinity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    header
+                    if detail != nil {
+                        episodePanel(scrolls: false)
+                    } else if let error {
+                        errorCard(error).padding(.top, 12)
+                    } else {
+                        // The Play placeholder in the header holds focus while details load.
+                        DetailSkeleton()
+                    }
+                }
+                .pageContainer()
+            }
+        }
+    }
+
+    private var isWatchPage: Bool {
+        #if os(iOS)
+        watchLayout
+        #else
+        false
+        #endif
+    }
+
     /// The two-column watch page. On a Mac or iPad it only pays off with a long episode list and room for both
     /// columns; otherwise the rail sat mostly empty beside a squeezed hero, so the page stacks instead.
     private var splitLayout: Bool {
@@ -1447,6 +1488,343 @@ struct VideoDetailView: View {
                                               drive: CloudDrive.missingLogin(forFlag: episode.flag), blockedBeforeRequest: false)
             }
         }
+    }
+
+    #if os(iOS)
+    // MARK: iPhone watch page
+
+    private var watchLayout: Bool { WatchPage.applies(sizeClass, verticalSizeClass) }
+    /// This video's playback scopes (`PlaybackHistoryContext.id`); the details may carry another ID than the list's.
+    private var watchScopes: Set<String> {
+        let origin = client.site.origin(or: client.origin)
+        return Set([video.id, detail?.id].compactMap { $0 }.map { EpisodeSkipSettings.scope(origin: origin, source: client.site.sourceKey, video: $0) })
+    }
+    /// What plays at the top of the page: one of this video's episodes.
+    private var watchChannel: Channel? {
+        store.playing.flatMap { watchScopes.contains($0.historyContext?.id ?? "") ? $0 : nil }
+    }
+    /// Where the viewer stopped last time, for Continue.
+    private var watchHistory: PlaybackHistoryEntry? {
+        store.playbackHistory.entries.first { watchScopes.contains($0.context.id) }
+    }
+    /// The episode playing, else the one watched last: marked in the list, which scrolls to it.
+    private var currentEpisodeID: Episode.ID? {
+        guard let episodes = detail?.episodes else { return nil }
+        return (watchChannel?.historyContext ?? watchHistory?.context)?.episode(in: episodes)?.id
+    }
+
+    /// As in Bilibili's app: the player at the top, under the status bar, and the title, actions, synopsis and
+    /// episodes scrolling below it. Full Screen grows the same player over the page, so playback carries on.
+    @ViewBuilder private var watchBody: some View {
+        let playerHeight = (containerWidth > 0 ? containerWidth : 390) * 9 / 16
+        ZStack(alignment: .top) {
+            if !fullScreen {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: playerHeight)
+                    ScrollView { watchDetails.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 24) }
+                        .scrollIndicators(.never)
+                }
+            }
+            watchPlayer
+                .frame(height: fullScreen ? nil : playerHeight)
+                .frame(maxWidth: .infinity, maxHeight: fullScreen ? .infinity : nil, alignment: .top)
+        }
+        // The status bar's strip above the player is the player's black.
+        .background(alignment: .top) { Color.black.frame(height: playerHeight).ignoresSafeArea(edges: .top) }
+        .background { if fullScreen { Color.black.ignoresSafeArea() } }
+        .statusBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .background { EdgeSwipeBack(enabled: !fullScreen) }
+        .toolbar(.hidden, for: .tabBar)
+        .onAppear {
+            store.watchPageScopes.formUnion(watchScopes)
+            PlayerOrientation.holdPortrait(true)
+        }
+        .onChange(of: watchScopes) { old, new in
+            store.watchPageScopes.subtract(old.subtracting(new)); store.watchPageScopes.formUnion(new)
+        }
+        .onDisappear {
+            // Leaving the page ends its playback, as the full-screen player's Back does.
+            if watchChannel != nil { store.playing = nil }
+            store.watchPageScopes.subtract(watchScopes)
+            if fullScreen { fullScreen = false; PlayerOrientation.set(landscape: false) }
+            PlayerOrientation.holdPortrait(false)
+        }
+        .onChange(of: watchChannel == nil) { _, ended in
+            playerStarted = false
+            if ended && fullScreen { setFullScreen(landscape: false) }
+        }
+        .sheet(isPresented: $showsAllEpisodes) { allEpisodes }
+    }
+
+    @ViewBuilder private var watchPlayer: some View {
+        // One cover from opening the page to the first picture: the player's own wait stays under it, so nothing
+        // swaps or flickers on the way.
+        let covered = watchChannel == nil || (!playerStarted && !fullScreen)
+        ZStack {
+            if let channel = watchChannel {
+                PlaybackView(channel: channel, watch: WatchPlayback(fullScreen: fullScreen, toggleFullScreen: setFullScreen, leave: { dismiss() },
+                                                                    started: { playerStarted = $0 }))
+            }
+            if covered { watchCover.transition(.opacity) }
+        }
+        .animation(.easeOut(duration: 0.35), value: covered)
+    }
+
+    private func setFullScreen(landscape: Bool) {
+        let entering = !fullScreen
+        withAnimation(.smooth(duration: 0.3)) { fullScreen = entering }
+        // A landscape picture turns the phone; a portrait one fills the screen upright.
+        if !entering { PlayerOrientation.set(landscape: false) } else if landscape { PlayerOrientation.set(landscape: true) }
+    }
+
+    /// Before the picture: the cover across the top, blurred, while the page starts playing by itself. Play shows only
+    /// when that didn't happen (the episode failed, which the banner below explains).
+    private var watchCover: some View {
+        let starting = (detail == nil && error == nil) || busy || loadingEpisode != nil || store.resumingHistoryID != nil || watchChannel != nil
+        let first = detail.flatMap { detail in detail.episodes.first { $0.flag == activeFlag } ?? detail.episodes.first }
+        // The list's poster when there was one, so the picture doesn't change once the details arrive.
+        let poster = video.poster != nil ? video : detail ?? video
+        return WatchCoverBackdrop(poster: poster.poster, headers: poster.posterHeaders, loading: starting)
+            .contentShape(Rectangle())
+            .onTapGesture { if starting { withAnimation(.smooth(duration: 0.25)) { coverBack.toggle() } } }
+            .task(id: coverBack) {
+                guard coverBack else { return }
+                try? await Task.sleep(for: .seconds(3))
+                if !Task.isCancelled { withAnimation(.smooth(duration: 0.3)) { coverBack = false } }
+            }
+            .overlay {
+                if !starting, let first {
+                    Button { startRequest { await play(first) } } label: {
+                        Image(systemName: "play.fill").font(.system(size: 22, weight: .semibold))
+                            .frame(width: 58, height: 58)
+                            .glassSurface(.regular.interactive(), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n.text("Play"))
+                    .accessibilityIdentifier("watch.play")
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                // While it starts by itself nothing sits on the cover until it's tapped.
+                if !starting || coverBack {
+                    Button { dismiss() } label: { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
+                        .chromeButton()
+                        .accessibilityLabel(L10n.text("Back"))
+                        .padding(8)
+                        .transition(.opacity)
+                }
+            }
+            .foregroundStyle(.white)
+            .environment(\.colorScheme, .dark)
+    }
+
+    private var watchDetails: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(currentVideo().name).font(.title3.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                let meta = [currentVideo().remarks, currentVideo().year ?? "", SourceLabel(client.site.name).text].filter { !$0.isEmpty }
+                if !meta.isEmpty {
+                    Text(meta.joined(separator: " · ")).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            if detail?.episodes.isEmpty == false {
+                HStack(spacing: 10) { downloadButton(iconOnly: false); videoFavoriteButton }
+            }
+            playbackBanner
+            if let detail { synopsis(detail) }
+            if detail != nil {
+                watchEpisodes
+            } else if let error {
+                errorCard(error)
+            } else {
+                DetailSkeleton()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// As in Bilibili's 选集: one row of episodes that scrolls sideways to the one playing, and All for the full list.
+    /// A video with one episode has no row (its only episode is the video); several lines still show to choose from.
+    @ViewBuilder private var watchEpisodes: some View {
+        if let detail {
+            if detail.episodes.isEmpty {
+                Text(L10n.text("No playable sources were found for this video.")).foregroundStyle(.secondary)
+            } else {
+                let items = detail.episodes.filter { $0.flag == activeFlag }
+                let compact = items.allSatisfy { EpisodeRow.title($0.name).count <= 5 }
+                VStack(alignment: .leading, spacing: 12) {
+                    if items.count > 1 {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(L10n.text("Episodes")).font(.headline)
+                            Text("\(items.count)").font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            if items.count > (compact ? 5 : 2) {
+                                Button { showsAllEpisodes = true } label: {
+                                    HStack(spacing: 3) { Text(L10n.text("All")); Image(systemName: "chevron.right").font(.caption.weight(.semibold)) }
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                        .frame(minHeight: 44).contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("watch.allEpisodes")
+                            }
+                        }
+                    } else if flags.count > 1 {
+                        Text(L10n.text("Lines")).font(.headline)
+                    }
+                    watchLines
+                    if items.count > 1 {
+                        // scrollPosition rather than ScrollViewReader: scrollTo also scrolls the page's vertical
+                        // scroll view, which pushed the title under the player.
+                        ScrollView(.horizontal) {
+                            LazyHStack(spacing: 8) { ForEach(items) { watchEpisodeCard($0, compact: compact) } }
+                                .scrollTargetLayout()
+                                .padding(.horizontal, 16)
+                        }
+                        .scrollIndicators(.never)
+                        .scrollPosition(id: $episodeScroll, anchor: .center)
+                        .padding(.horizontal, -16)
+                        .onAppear { episodeScroll = currentEpisodeID }
+                        .onChange(of: currentEpisodeID) { _, id in if let id { withAnimation { episodeScroll = id } } }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The lines, when there are several. Choosing one while an episode plays switches to it on that line.
+    @ViewBuilder private var watchLines: some View {
+        if flags.count > 1 {
+            SourceStrip(items: flags.map { .init(id: $0, name: $0.isEmpty ? L10n.text("Play") : $0) }, selection: activeFlag) { flag in
+                selectedFlag = flag
+                guard watchChannel != nil, let episodes = detail?.episodes else { return }
+                let playing = episodes.first { $0.id == currentEpisodeID }
+                let same = episodes.first { $0.flag == flag && $0.name == playing?.name } ?? episodes.first { $0.flag == flag }
+                if let same, same.id != currentEpisodeID { startRequest { await play(same) } }
+            }
+        }
+    }
+
+    /// An episode: a small tile for short names (第1集, 01), a two-line card for long ones. The one playing is tinted in
+    /// the accent. There is no per-episode favorite on this page.
+    private func watchEpisodeCard(_ episode: Episode, compact: Bool, fill: Bool = false, chosen: (() -> Void)? = nil) -> some View {
+        let current = episode.id == currentEpisodeID
+        let saved = download(episode)
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return Button {
+            chosen?()
+            // The episode already playing keeps playing.
+            guard !(current && watchChannel != nil) else { return }
+            startRequest { await play(episode) }
+        } label: {
+            HStack(spacing: 6) {
+                if loadingEpisode == episode.id { ProgressView().controlSize(.small) }
+                Text(EpisodeRow.title(episode.name)).lineLimit(compact ? 1 : 2)
+                    .multilineTextAlignment(compact ? .center : .leading)
+            }
+            .font(.subheadline.weight(current ? .semibold : .regular))
+            .foregroundStyle(current ? Brand.accent : Color.primary)
+            .padding(.horizontal, compact ? 8 : 12)
+            .frame(width: fill ? nil : compact ? 64 : 150, height: compact ? 44 : 54, alignment: compact ? .center : .leading)
+            .frame(maxWidth: fill ? .infinity : nil, alignment: compact ? .center : .leading)
+            .background(current ? Brand.accent.opacity(0.14) : Color.primary.opacity(0.06), in: shape)
+            .overlay(alignment: .topTrailing) { if saved?.status == .completed { DownloadedBadge() } }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .id(episode.id)
+        .accessibilityAddTraits(current ? .isSelected : [])
+        .contextMenu {
+            if saved == nil || saved?.status == .failed {
+                Button(L10n.text("Download"), systemImage: "arrow.down.circle") {
+                    DownloadLibrary.shared.download(DownloadSource(site: client.site, videoID: video.id, episode: episode),
+                                                    title: video.name, poster: video.poster, posterHeaders: video.posterHeaders)
+                }
+            } else if let saved {
+                Button(L10n.text(saved.status == .completed ? "Delete Download" : "Cancel Download"), systemImage: "trash", role: .destructive) {
+                    DownloadLibrary.shared.remove([saved.id])
+                }
+            }
+        }
+    }
+
+    private var allEpisodes: some View {
+        let items = (detail?.episodes ?? []).filter { $0.flag == activeFlag }
+        let compact = items.allSatisfy { EpisodeRow.title($0.name).count <= 5 }
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    watchLines
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: compact ? 64 : 150), spacing: 8)], spacing: 8) {
+                        ForEach(items) { watchEpisodeCard($0, compact: compact, fill: true) { showsAllEpisodes = false } }
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle(L10n.text("Episodes"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button(L10n.text("Done")) { showsAllEpisodes = false } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+    #endif
+}
+
+#if os(iOS)
+/// iPhone: a video's page is a watch page, its player at the top (`VideoDetailView`). Not on iPhone Duo's inner
+/// display (regular both ways), which has an iPad's room.
+enum WatchPage {
+    @MainActor static func applies(_ horizontal: UserInterfaceSizeClass?, _ vertical: UserInterfaceSizeClass?) -> Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && !(horizontal == .regular && vertical == .regular)
+    }
+}
+
+/// A swipe from the left edge goes back, as on any pushed page: hiding the navigation bar turns that gesture off.
+/// It also comes before the picture's slide-to-seek and the episode row's scrolling, which would otherwise take a
+/// swipe that starts at the edge.
+struct EdgeSwipeBack: UIViewControllerRepresentable {
+    /// Off in Full Screen, where the swipe would leave the page.
+    var enabled: Bool
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.enabled = enabled }
+
+    final class Controller: UIViewController, UIGestureRecognizerDelegate {
+        var enabled = true
+        private weak var recognizer: UIGestureRecognizer?
+        private weak var previous: UIGestureRecognizerDelegate?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            // Again after a swipe that was let go halfway, which brings the page back.
+            guard let pop = navigationController?.interactivePopGestureRecognizer, pop.delegate !== self else { return }
+            recognizer = pop; previous = pop.delegate
+            pop.delegate = self; pop.isEnabled = true
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            // The swipe already under way goes on; other pages get the system's own rules back.
+            if let recognizer, recognizer.delegate === self { recognizer.delegate = previous }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            enabled && (navigationController?.viewControllers.count ?? 0) > 1
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            enabled && other is UIPanGestureRecognizer
+        }
+    }
+}
+#endif
+
+extension PlaybackHistoryEntry {
+    /// The watched title as a list card, to open its page with.
+    var listVideo: Video {
+        Video(id: context.videoID, name: context.videoName, poster: context.poster, posterHeaders: context.posterHeaders ?? [:], year: context.year)
     }
 }
 

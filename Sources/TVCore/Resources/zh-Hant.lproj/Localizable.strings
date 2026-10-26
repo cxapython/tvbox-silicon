@@ -1027,3 +1027,8 @@
 "Chat with the developer and other users" = "與開發者和其他使用者交流";
 "Prefer to chat? Join the Telegram group." = "想直接聊聊？加入 Telegram 群組。";
 "Scan with your iPhone to join the group." = "用 iPhone 掃描加入群組。";
+
+/* iPhone watch page */
+"Full Screen" = "全螢幕";
+"Exit Full Screen" = "結束全螢幕";
+"Lines" = "線路";

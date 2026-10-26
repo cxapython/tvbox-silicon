@@ -349,7 +349,9 @@ private struct PlayerPresentation: ViewModifier {
         // One presentation while anything plays: the next episode replaces the channel inside the player.
         // Keyed by the channel, every change dismissed the player and presented a new one, so even a
         // queued episode would stop and load.
-        content.fullScreenCover(item: Binding(get: { playing.map(PlayerSlot.init) }, set: { if $0 == nil { playing = nil } })) {
+        // An iPhone watch page plays its own video at the top of the page (`VideoDetailView`).
+        content.fullScreenCover(item: Binding(get: { store.playsInWatchPage(playing) ? nil : playing.map(PlayerSlot.init) },
+                                              set: { if $0 == nil, !store.playsInWatchPage(playing) { playing = nil } })) {
             PlaybackView(channel: $0.channel)
         }
         #endif

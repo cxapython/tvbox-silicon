@@ -1027,3 +1027,8 @@
 "Chat with the developer and other users" = "Chat with the developer and other users";
 "Prefer to chat? Join the Telegram group." = "Prefer to chat? Join the Telegram group.";
 "Scan with your iPhone to join the group." = "Scan with your iPhone to join the group.";
+
+/* iPhone watch page */
+"Full Screen" = "Full Screen";
+"Exit Full Screen" = "Exit Full Screen";
+"Lines" = "Lines";
