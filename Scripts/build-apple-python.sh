@@ -123,8 +123,12 @@ done
 # BeeWare's templates say iOS 13 / tvOS 9, but our wheels target 17.0, some tvOS modules 12.0 and the simulator's
 # Python.framework 14.0. App Store processing rejects a framework whose binary needs a newer OS than its
 # MinimumOSVersion (ITMS-90208), so declare the app's deployment target, which covers them all.
+# _ssl and _hashlib link OpenSSL, which Apple lists as a commonly used third-party SDK: TestFlight review rejects
+# a framework holding it without a privacy manifest (ITMS-91061). Every module framework gets one (no tracking,
+# no data collected, no required-reason APIs), so a module flagged later is covered too.
 for framework in "$DEST/Frameworks/"*.framework; do
   plutil -replace MinimumOSVersion -string "$MINIMUM_OS" "$framework/Info.plist"
+  cp Config/Python/PrivacyInfo.xcprivacy "$framework/"
   binary="$framework/$(plutil -extract CFBundleExecutable raw "$framework/Info.plist")"
   declared="$(plutil -extract MinimumOSVersion raw "$framework/Info.plist")"
   needed="$(vtool -show-build "$binary" | awk '/minos/ {print $2; exit}')"
