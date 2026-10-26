@@ -791,6 +791,10 @@ struct VideoDetailView: View {
     @State private var fullScreen = false
     @State private var showsAllEpisodes = false
     @State private var episodeScroll: Episode.ID?
+    /// The page's player shows its picture (or an error); until then the page's cover stays over it.
+    @State private var playerStarted = false
+    /// Back on the cover while it starts: shown for a moment by a tap, as the player's controls are.
+    @State private var coverBack = false
     #endif
     @State private var requestTask: Task<Void, Never>?
     @State private var detail: Video?
@@ -1545,16 +1549,25 @@ struct VideoDetailView: View {
             if fullScreen { fullScreen = false; PlayerOrientation.set(landscape: false) }
             PlayerOrientation.holdPortrait(false)
         }
-        .onChange(of: watchChannel == nil) { _, ended in if ended && fullScreen { setFullScreen(landscape: false) } }
+        .onChange(of: watchChannel == nil) { _, ended in
+            playerStarted = false
+            if ended && fullScreen { setFullScreen(landscape: false) }
+        }
         .sheet(isPresented: $showsAllEpisodes) { allEpisodes }
     }
 
     @ViewBuilder private var watchPlayer: some View {
-        if let channel = watchChannel {
-            PlaybackView(channel: channel, watch: WatchPlayback(fullScreen: fullScreen, toggleFullScreen: setFullScreen, leave: { dismiss() }))
-        } else {
-            watchCover
+        // One cover from opening the page to the first picture: the player's own wait stays under it, so nothing
+        // swaps or flickers on the way.
+        let covered = watchChannel == nil || (!playerStarted && !fullScreen)
+        ZStack {
+            if let channel = watchChannel {
+                PlaybackView(channel: channel, watch: WatchPlayback(fullScreen: fullScreen, toggleFullScreen: setFullScreen, leave: { dismiss() },
+                                                                    started: { playerStarted = $0 }))
+            }
+            if covered { watchCover.transition(.opacity) }
         }
+        .animation(.easeOut(duration: 0.35), value: covered)
     }
 
     private func setFullScreen(landscape: Bool) {
@@ -1567,9 +1580,18 @@ struct VideoDetailView: View {
     /// Before the picture: the cover across the top, blurred, while the page starts playing by itself. Play shows only
     /// when that didn't happen (the episode failed, which the banner below explains).
     private var watchCover: some View {
-        let starting = (detail == nil && error == nil) || busy || loadingEpisode != nil || store.resumingHistoryID != nil
+        let starting = (detail == nil && error == nil) || busy || loadingEpisode != nil || store.resumingHistoryID != nil || watchChannel != nil
         let first = detail.flatMap { detail in detail.episodes.first { $0.flag == activeFlag } ?? detail.episodes.first }
-        return WatchCoverBackdrop(poster: video.poster, headers: video.posterHeaders, loading: starting)
+        // The list's poster when there was one, so the picture doesn't change once the details arrive.
+        let poster = video.poster != nil ? video : detail ?? video
+        return WatchCoverBackdrop(poster: poster.poster, headers: poster.posterHeaders, loading: starting)
+            .contentShape(Rectangle())
+            .onTapGesture { if starting { withAnimation(.smooth(duration: 0.25)) { coverBack.toggle() } } }
+            .task(id: coverBack) {
+                guard coverBack else { return }
+                try? await Task.sleep(for: .seconds(3))
+                if !Task.isCancelled { withAnimation(.smooth(duration: 0.3)) { coverBack = false } }
+            }
             .overlay {
                 if !starting, let first {
                     Button { startRequest { await play(first) } } label: {
@@ -1583,10 +1605,14 @@ struct VideoDetailView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                Button { dismiss() } label: { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
-                    .chromeButton()
-                    .accessibilityLabel(L10n.text("Back"))
-                    .padding(8)
+                // While it starts by itself nothing sits on the cover until it's tapped.
+                if !starting || coverBack {
+                    Button { dismiss() } label: { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
+                        .chromeButton()
+                        .accessibilityLabel(L10n.text("Back"))
+                        .padding(8)
+                        .transition(.opacity)
+                }
             }
             .foregroundStyle(.white)
             .environment(\.colorScheme, .dark)

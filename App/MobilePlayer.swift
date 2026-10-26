@@ -708,6 +708,8 @@ struct WatchPlayback {
     var toggleFullScreen: (_ landscape: Bool) -> Void
     /// Back, out of the page.
     var leave: () -> Void
+    /// The picture, or an error, has taken the place of the wait: the page's cover can go.
+    var started: (Bool) -> Void = { _ in }
 }
 
 /// The full-screen player sets the app's appearance; one at the top of a page sets only its own.
