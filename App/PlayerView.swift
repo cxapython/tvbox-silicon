@@ -476,7 +476,7 @@ private struct NativePlayerView: View {
     var body: some View {
         ZStack {
             PlayerSurface(player: player)
-            if showsDanmaku && !comments.isEmpty { DanmakuOverlay(player: player, comments: comments, opacity: opacity, revision: revision) }
+            if showsDanmaku && !comments.isEmpty { DanmakuOverlay(player: player, comments: comments, opacity: opacity, revision: revision).ignoresSafeArea() }
         }
     }
 }
@@ -651,7 +651,7 @@ private struct NativePlayerView: UIViewControllerRepresentable {
     private var overlay: AnyView {
         AnyView(ZStack {
             if let enhancer { EnhancedVideoSurface(enhancer: enhancer) }
-            if showsDanmaku && !comments.isEmpty { DanmakuOverlay(player: player, comments: comments, opacity: opacity, revision: revision) }
+            if showsDanmaku && !comments.isEmpty { DanmakuOverlay(player: player, comments: comments, opacity: opacity, revision: revision).ignoresSafeArea() }
             if let waiting { waiting.view.transition(.opacity) }
         }
         .animation(.easeInOut(duration: 0.7), value: waiting == nil))
@@ -812,7 +812,7 @@ private struct DesktopPlaybackView: View {
                 // A new player view whenever the controls come or go (see DesktopNativePlayer).
                 DesktopNativePlayer(player: session.player, fillsFrame: fillsFrame, live: bare, waiting: waitContent, enhancer: session.enhancer)
                     .id(bare)
-                if showsDanmaku && !session.danmaku.isEmpty { DanmakuOverlay(player: session.player, comments: session.danmaku, opacity: session.danmakuOpacity, revision: session.danmakuRevision) }
+                if showsDanmaku && !session.danmaku.isEmpty { DanmakuOverlay(player: session.player, comments: session.danmaku, opacity: session.danmakuOpacity, revision: session.danmakuRevision).ignoresSafeArea() }
                 if let error = session.error {
                     VStack(spacing: 16) {
                         Image(systemName: "exclamationmark.triangle").font(.largeTitle)

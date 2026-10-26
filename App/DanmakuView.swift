@@ -26,7 +26,7 @@ struct DanmakuOverlay: View {
             }
         }
         .opacity(opacity)
-        .ignoresSafeArea()
+        // No `ignoresSafeArea` here: it would win over the caller's, and the iPhone keeps comments below the Dynamic Island.
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .task(id: "\(revision):\(comments.count)") { engine.load(comments) }
