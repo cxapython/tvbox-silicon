@@ -48,7 +48,8 @@ struct PlaybackHistoryView: View {
                 header
                 LazyVGrid(columns: Layout.posterColumns, spacing: Layout.gridRowSpacing) {
                     ForEach(entries) { entry in
-                        HistoryCard(entry: entry, selection: managing ? selected.contains(entry.id) : nil, details: true) { tap(entry) }
+                        HistoryCard(entry: entry, selection: managing ? selected.contains(entry.id) : nil, details: true,
+                                    action: managing ? { tap(entry) } : nil)
                     }
                 }
                 .tvFocusSection()
@@ -97,12 +98,9 @@ struct PlaybackHistoryView: View {
             }
     }
 
+    /// Selects or deselects while managing; otherwise the card resumes the title itself.
     private func tap(_ entry: PlaybackHistoryEntry) {
-        if managing {
-            if selected.contains(entry.id) { selected.remove(entry.id) } else { selected.insert(entry.id) }
-        } else {
-            store.resume(entry)
-        }
+        if selected.contains(entry.id) { selected.remove(entry.id) } else { selected.insert(entry.id) }
     }
 }
 
@@ -128,6 +126,10 @@ enum HistoryFormat {
 struct HistoryCard: View {
     @Environment(Store.self) private var store
     @Environment(\.stripDrag) private var drag
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    #endif
     let entry: PlaybackHistoryEntry
     /// Whether the card is selected while managing history; nil outside managing.
     var selection: Bool? = nil
@@ -187,63 +189,81 @@ struct HistoryCard: View {
     }
 
     private var posterButton: some View {
-        Button {
-            guard drag?.active != true else { return }
-            if let action { action() } else { store.resume(entry) }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Color.clear.aspectRatio(2.0 / 3.0, contentMode: .fit)
-                    .overlay { PosterImage(url: entry.context.poster, headers: entry.context.posterHeaders ?? [:]) }
-                    .overlay(alignment: .bottom) {
-                        if entry.duration > 0 {
-                            // White on the artwork, as in the TV app: the accent is near-black in light mode.
-                            GeometryReader { proxy in
-                                Capsule().fill(.white.opacity(0.25))
-                                    .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: proxy.size.width * entry.progress) }
-                            }
-                            .frame(height: 5).padding(10)
-                        }
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if let selection {
-                            Image(systemName: selection ? "checkmark.circle.fill" : "circle")
-                                .font(.title2).symbolRenderingMode(.palette)
-                                .foregroundStyle(selection ? Brand.onAccent : .white, selection ? Brand.accent : .black.opacity(0.35))
-                                .contentTransition(.symbolEffect(.replace))
-                                .padding(8)
-                        }
-                    }
-                    .overlay {
-                        // Preparing this title; choosing another card switches to that one.
-                        if store.resumingHistoryID == entry.id {
-                            ZStack {
-                                Color.black.opacity(0.5)
-                                ProgressView().controlSize(.large).tint(.white)
-                            }
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .opacity(selection == false ? 0.6 : 1)
-                Text(entry.context.videoName).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                if details {
-                    Text("\(entry.context.episodeName) · \(SourceLabel(entry.context.sourceName).text)")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(HistoryFormat.status(entry)).font(.caption).monospacedDigit().foregroundStyle(.tertiary).lineLimit(1)
-                } else {
-                    // The bar on the poster already says how far; the line names the episode.
-                    Text(entry.context.episodeName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
+        Group {
+            #if os(iOS)
+            // On an iPhone the title's watch page opens and resumes it at the top (`VideoDetailView`).
+            if action == nil, WatchPage.applies(horizontalSizeClass, verticalSizeClass), let client = store.historyClient(entry) {
+                NavigationLink(value: Route { AnyView(VideoDetailView(video: entry.listVideo, client: client, resume: entry)) }) { cardLabel }
+                    .cardButton()
+            } else {
+                resumeButton
             }
-            .frame(width: details ? nil : HistoryMetrics.card)
-            .frame(maxWidth: details ? .infinity : nil, alignment: .leading)
+            #else
+            resumeButton
+            #endif
         }
-        .cardButton()
         .accessibilityAddTraits(selection == true ? [.isSelected] : [])
         .accessibilityIdentifier((selection != nil ? "history.select." : "history.resume.") + entry.context.videoID)
         #if os(tvOS)
         // The remote opens a menu on the focused button, so it stays here.
         .contextMenu { menu }
         #endif
+    }
+
+    private var resumeButton: some View {
+        Button {
+            guard drag?.active != true else { return }
+            if let action { action() } else { store.resume(entry) }
+        } label: { cardLabel }
+        .cardButton()
+    }
+
+    private var cardLabel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Color.clear.aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .overlay { PosterImage(url: entry.context.poster, headers: entry.context.posterHeaders ?? [:]) }
+                .overlay(alignment: .bottom) {
+                    if entry.duration > 0 {
+                        // White on the artwork, as in the TV app: the accent is near-black in light mode.
+                        GeometryReader { proxy in
+                            Capsule().fill(.white.opacity(0.25))
+                                .overlay(alignment: .leading) { Capsule().fill(.white).frame(width: proxy.size.width * entry.progress) }
+                        }
+                        .frame(height: 5).padding(10)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if let selection {
+                        Image(systemName: selection ? "checkmark.circle.fill" : "circle")
+                            .font(.title2).symbolRenderingMode(.palette)
+                            .foregroundStyle(selection ? Brand.onAccent : .white, selection ? Brand.accent : .black.opacity(0.35))
+                            .contentTransition(.symbolEffect(.replace))
+                            .padding(8)
+                    }
+                }
+                .overlay {
+                    // Preparing this title; choosing another card switches to that one.
+                    if store.resumingHistoryID == entry.id {
+                        ZStack {
+                            Color.black.opacity(0.5)
+                            ProgressView().controlSize(.large).tint(.white)
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .opacity(selection == false ? 0.6 : 1)
+            Text(entry.context.videoName).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+            if details {
+                Text("\(entry.context.episodeName) · \(SourceLabel(entry.context.sourceName).text)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(HistoryFormat.status(entry)).font(.caption).monospacedDigit().foregroundStyle(.tertiary).lineLimit(1)
+            } else {
+                // The bar on the poster already says how far; the line names the episode.
+                Text(entry.context.episodeName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(width: details ? nil : HistoryMetrics.card)
+        .frame(maxWidth: details ? .infinity : nil, alignment: .leading)
     }
 
     @ViewBuilder private var menu: some View {
