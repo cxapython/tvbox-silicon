@@ -790,7 +790,7 @@ struct VideoDetailView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var fullScreen = false
     @State private var showsAllEpisodes = false
-    @State private var resumed = false
+    @State private var episodeScroll: Episode.ID?
     #endif
     @State private var requestTask: Task<Void, Never>?
     @State private var detail: Video?
@@ -861,14 +861,17 @@ struct VideoDetailView: View {
         .screenTitle(video.name).task {
             store.searchModel.suspend()
             #if os(iOS)
-            // From Continue Watching: picks up where the viewer stopped, once.
-            if watchLayout, let resume, !resumed, watchChannel == nil { resumed = true; store.resume(resume) }
+            // The watch page plays at once: where the viewer stopped (from Continue Watching, or watched before),
+            // which resolves its own details, or else the first episode once the details are in.
+            let continues = watchLayout && watchChannel == nil && store.resumingHistoryID == nil
+            let entry = continues ? resume ?? watchHistory : nil
+            if let entry { store.resume(entry) }
             #endif
             if detail == nil { await loadDetail() }
-            #if DEBUG && os(iOS)
-            // `-qaWatchPlay 1` plays the first episode at the top of the watch page, for screenshots.
-            if watchLayout, UserDefaults.standard.bool(forKey: "qaWatchPlay"), watchChannel == nil,
-               let first = detail?.episodes.first { startRequest { await play(first) } }
+            #if os(iOS)
+            if continues, entry == nil, watchChannel == nil, let first = detail.flatMap({ detail in detail.episodes.first { $0.flag == activeFlag } }) {
+                startRequest { await play(first) }
+            }
             #endif
             #if DEBUG
             // `-qaDownloadPicker 1` opens the episode picker, for screenshots.
@@ -1561,59 +1564,32 @@ struct VideoDetailView: View {
         if !entering { PlayerOrientation.set(landscape: false) } else if landscape { PlayerOrientation.set(landscape: true) }
     }
 
-    /// Before anything plays: the cover over a blur of itself, and Play, or Continue where the viewer stopped.
+    /// Before the picture: the cover across the top, blurred, while the page starts playing by itself. Play shows only
+    /// when that didn't happen (the episode failed, which the banner below explains).
     private var watchCover: some View {
-        ZStack {
-            Color.black
-            PosterImage(url: video.poster, headers: video.posterHeaders)
-                .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
-                .blur(radius: 30).scaleEffect(1.3)
-                .overlay(Color.black.opacity(0.5))
-                .accessibilityHidden(true)
-            watchStart
-        }
-        .clipped()
-        .overlay(alignment: .topLeading) {
-            Button { dismiss() } label: { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
-                .chromeButton()
-                .accessibilityLabel(L10n.text("Back"))
-                .padding(8)
-        }
-        .foregroundStyle(.white)
-        .environment(\.colorScheme, .dark)
-    }
-
-    @ViewBuilder private var watchStart: some View {
-        let entry = watchHistory
+        let starting = (detail == nil && error == nil) || busy || loadingEpisode != nil || store.resumingHistoryID != nil
         let first = detail.flatMap { detail in detail.episodes.first { $0.flag == activeFlag } ?? detail.episodes.first }
-        let preparing = loadingEpisode != nil || (entry.map { store.resumingHistoryID == $0.id } ?? false)
-        if detail == nil && error == nil {
-            ProgressView().controlSize(.large).tint(.white)
-        } else if entry != nil || first != nil {
-            Button {
-                if let entry, entry.context.episode(in: detail?.episodes ?? []) != nil || detail == nil { store.resume(entry) }
-                else if let first { startRequest { await play(first) } }
-            } label: {
-                VStack(spacing: 10) {
-                    Group {
-                        if preparing { ProgressView().tint(.white) } else { Image(systemName: "play.fill") }
+        return WatchCoverBackdrop(poster: video.poster, headers: video.posterHeaders, loading: starting)
+            .overlay {
+                if !starting, let first {
+                    Button { startRequest { await play(first) } } label: {
+                        Image(systemName: "play.fill").font(.system(size: 22, weight: .semibold))
+                            .frame(width: 58, height: 58)
+                            .glassSurface(.regular.interactive(), in: Circle())
                     }
-                    .font(.system(size: 22, weight: .semibold))
-                    .frame(width: 58, height: 58)
-                    .glassSurface(.regular.interactive(), in: Circle())
-                    Text(entry.map { L10n.text("Continue %@", EpisodeRow.title($0.context.episodeName)) } ?? L10n.text("Play"))
-                        .font(.subheadline.weight(.semibold)).lineLimit(1)
-                        // A one-episode video's episode is often the whole title: it truncates rather than spans the cover.
-                        .frame(maxWidth: 240)
-                        .padding(.horizontal, 14).padding(.vertical, 7)
-                        .glassSurface(.regular, in: Capsule())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n.text("Play"))
+                    .accessibilityIdentifier("watch.play")
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .disabled(preparing)
-            .accessibilityIdentifier("watch.play")
-        }
+            .overlay(alignment: .topLeading) {
+                Button { dismiss() } label: { Image(systemName: "chevron.backward").font(.headline).frame(width: 22, height: 22) }
+                    .chromeButton()
+                    .accessibilityLabel(L10n.text("Back"))
+                    .padding(8)
+            }
+            .foregroundStyle(.white)
+            .environment(\.colorScheme, .dark)
     }
 
     private var watchDetails: some View {
@@ -1641,48 +1617,73 @@ struct VideoDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// One row of episodes that scrolls sideways to the one playing, as in Bilibili's 选集; All lists them in a sheet.
+    /// As in Bilibili's 选集: one row of episodes that scrolls sideways to the one playing, and All for the full list.
+    /// A video with one episode has no row (its only episode is the video); several lines still show to choose from.
     @ViewBuilder private var watchEpisodes: some View {
         if let detail {
             if detail.episodes.isEmpty {
                 Text(L10n.text("No playable sources were found for this video.")).foregroundStyle(.secondary)
             } else {
                 let items = detail.episodes.filter { $0.flag == activeFlag }
+                let compact = items.allSatisfy { EpisodeRow.title($0.name).count <= 5 }
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(L10n.text("Episodes")).font(.headline)
-                        Text("\(items.count)").font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        if items.count > 3 {
-                            Button { showsAllEpisodes = true } label: {
-                                HStack(spacing: 3) { Text(L10n.text("All")); Image(systemName: "chevron.right").font(.caption.weight(.semibold)) }
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                                    .frame(minHeight: 44).contentShape(Rectangle())
+                    if items.count > 1 {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(L10n.text("Episodes")).font(.headline)
+                            Text("\(items.count)").font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            if items.count > (compact ? 5 : 2) {
+                                Button { showsAllEpisodes = true } label: {
+                                    HStack(spacing: 3) { Text(L10n.text("All")); Image(systemName: "chevron.right").font(.caption.weight(.semibold)) }
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                        .frame(minHeight: 44).contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("watch.allEpisodes")
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("watch.allEpisodes")
                         }
+                    } else if flags.count > 1 {
+                        Text(L10n.text("Lines")).font(.headline)
                     }
-                    flagPicker
-                    ScrollViewReader { proxy in
+                    watchLines
+                    if items.count > 1 {
+                        // scrollPosition rather than ScrollViewReader: scrollTo also scrolls the page's vertical
+                        // scroll view, which pushed the title under the player.
                         ScrollView(.horizontal) {
-                            LazyHStack(spacing: 8) { ForEach(items) { watchEpisodeCard($0) } }
+                            LazyHStack(spacing: 8) { ForEach(items) { watchEpisodeCard($0, compact: compact) } }
+                                .scrollTargetLayout()
                                 .padding(.horizontal, 16)
                         }
                         .scrollIndicators(.never)
+                        .scrollPosition(id: $episodeScroll, anchor: .center)
                         .padding(.horizontal, -16)
-                        .onAppear { if let id = currentEpisodeID { proxy.scrollTo(id, anchor: .center) } }
-                        .onChange(of: currentEpisodeID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                        .onAppear { episodeScroll = currentEpisodeID }
+                        .onChange(of: currentEpisodeID) { _, id in if let id { withAnimation { episodeScroll = id } } }
                     }
                 }
             }
         }
     }
 
-    /// An episode. The one playing is outlined in the accent; there is no per-episode favorite on this page.
-    private func watchEpisodeCard(_ episode: Episode, fill: Bool = false, chosen: (() -> Void)? = nil) -> some View {
+    /// The lines, when there are several. Choosing one while an episode plays switches to it on that line.
+    @ViewBuilder private var watchLines: some View {
+        if flags.count > 1 {
+            SourceStrip(items: flags.map { .init(id: $0, name: $0.isEmpty ? L10n.text("Play") : $0) }, selection: activeFlag) { flag in
+                selectedFlag = flag
+                guard watchChannel != nil, let episodes = detail?.episodes else { return }
+                let playing = episodes.first { $0.id == currentEpisodeID }
+                let same = episodes.first { $0.flag == flag && $0.name == playing?.name } ?? episodes.first { $0.flag == flag }
+                if let same, same.id != currentEpisodeID { startRequest { await play(same) } }
+            }
+        }
+    }
+
+    /// An episode: a small tile for short names (第1集, 01), a two-line card for long ones. The one playing is tinted in
+    /// the accent. There is no per-episode favorite on this page.
+    private func watchEpisodeCard(_ episode: Episode, compact: Bool, fill: Bool = false, chosen: (() -> Void)? = nil) -> some View {
         let current = episode.id == currentEpisodeID
         let saved = download(episode)
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         return Button {
             chosen?()
             // The episode already playing keeps playing.
@@ -1691,23 +1692,21 @@ struct VideoDetailView: View {
         } label: {
             HStack(spacing: 6) {
                 if loadingEpisode == episode.id { ProgressView().controlSize(.small) }
-                else if current && watchChannel != nil { Image(systemName: "play.fill").font(.caption) }
-                Text(EpisodeRow.title(episode.name)).lineLimit(2).multilineTextAlignment(.leading)
+                Text(EpisodeRow.title(episode.name)).lineLimit(compact ? 1 : 2)
+                    .multilineTextAlignment(compact ? .center : .leading)
             }
             .font(.subheadline.weight(current ? .semibold : .regular))
             .foregroundStyle(current ? Brand.accent : Color.primary)
-            .padding(.horizontal, 12)
-            .frame(width: fill ? nil : 116, height: 56, alignment: .leading)
-            .frame(maxWidth: fill ? .infinity : nil, alignment: .leading)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                if current { RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Brand.accent, lineWidth: 1.5) }
-            }
+            .padding(.horizontal, compact ? 8 : 12)
+            .frame(width: fill ? nil : compact ? 64 : 150, height: compact ? 44 : 54, alignment: compact ? .center : .leading)
+            .frame(maxWidth: fill ? .infinity : nil, alignment: compact ? .center : .leading)
+            .background(current ? Brand.accent.opacity(0.14) : Color.primary.opacity(0.06), in: shape)
             .overlay(alignment: .topTrailing) { if saved?.status == .completed { DownloadedBadge() } }
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
         .id(episode.id)
+        .accessibilityAddTraits(current ? .isSelected : [])
         .contextMenu {
             if saved == nil || saved?.status == .failed {
                 Button(L10n.text("Download"), systemImage: "arrow.down.circle") {
@@ -1724,12 +1723,13 @@ struct VideoDetailView: View {
 
     private var allEpisodes: some View {
         let items = (detail?.episodes ?? []).filter { $0.flag == activeFlag }
+        let compact = items.allSatisfy { EpisodeRow.title($0.name).count <= 5 }
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    flagPicker
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                        ForEach(items) { watchEpisodeCard($0, fill: true) { showsAllEpisodes = false } }
+                    watchLines
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: compact ? 64 : 150), spacing: 8)], spacing: 8) {
+                        ForEach(items) { watchEpisodeCard($0, compact: compact, fill: true) { showsAllEpisodes = false } }
                     }
                 }
                 .padding(16)

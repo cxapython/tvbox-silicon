@@ -77,7 +77,19 @@ struct MobilePlayerView: View {
                     .playerBleed(!inline, edges: .horizontal)
             }
             // The artwork dissolves into the first frame.
-            if let waiting { waiting.view.playerBleed(!inline).transition(.opacity) }
+            if let waiting {
+                if inline {
+                    // On a watch page: the cover across the player, blurred, as before it started; the full-screen
+                    // player keeps its own wait.
+                    Group {
+                        if waiting.starting { WatchCoverBackdrop(poster: waiting.artwork.poster, headers: waiting.artwork.headers, loading: session.error == nil) }
+                        else { ProgressView().controlSize(.large).tint(.white) }
+                    }
+                    .transition(.opacity)
+                } else {
+                    waiting.view.playerBleed(true).transition(.opacity)
+                }
+            }
             if pip.active { pipPlaceholder }
             if playingOn != nil { Color.black.playerBleed(!inline) }
             // A tap on the picture shows or hides the controls; a tap on a control keeps them up (see `rows`).
@@ -656,6 +668,25 @@ struct MobilePlayerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .playerBleed(!inline)
+    }
+}
+
+/// The top of an iPhone watch page before the picture: the cover filling the width, blurred, under a spinner.
+struct WatchCoverBackdrop: View {
+    let poster: URL?
+    var headers: [String: String] = [:]
+    var loading = true
+    var body: some View {
+        ZStack {
+            Color.black
+            PosterImage(url: poster, headers: headers)
+                .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                .blur(radius: 24).scaleEffect(1.2)
+                .overlay(Color.black.opacity(0.35))
+                .accessibilityHidden(true)
+            if loading { ProgressView().controlSize(.large).tint(.white) }
+        }
+        .clipped()
     }
 }
 
